@@ -27,6 +27,11 @@ class FileRename(BaseModel):
     name: str
 
 
+class FileMove(BaseModel):
+    """File move request"""
+    parent_folder_id: Optional[int] = None
+
+
 class FileMetadata(BaseModel):
     """File metadata response"""
     id: int
@@ -325,6 +330,79 @@ def delete_file(file_id: int, current_user: TokenData = Depends(get_current_user
             conn.commit()
             
             return None
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error: {str(e)}"
+        )
+
+
+@router.patch("/{file_id}/move", response_model=FileMetadata)
+def move_file(file_id: int, move_data: FileMove, current_user: TokenData = Depends(get_current_user)):
+    """
+    Move a file to a different folder (or root).
+    
+    - **file_id**: File ID to move
+    - **parent_folder_id**: Target folder ID (optional, null for root)
+    """
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Verify file exists and belongs to user
+            cursor.execute(
+                "SELECT id FROM files WHERE id = ? AND user_id = ?",
+                (file_id, current_user.user_id)
+            )
+            if not cursor.fetchone():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="File not found"
+                )
+            
+            # Verify target folder exists (if provided) and belongs to user
+            if move_data.parent_folder_id is not None:
+                cursor.execute(
+                    "SELECT id FROM folders WHERE id = ? AND user_id = ?",
+                    (move_data.parent_folder_id, current_user.user_id)
+                )
+                if not cursor.fetchone():
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Target folder not found"
+                    )
+            
+            # Update parent folder
+            cursor.execute(
+                "UPDATE files SET parent_folder_id = ? WHERE id = ?",
+                (move_data.parent_folder_id, file_id)
+            )
+            conn.commit()
+            
+            # Get updated file
+            cursor.execute(
+                "SELECT id, name, size, mime_type, parent_folder_id, created_at FROM files WHERE id = ?",
+                (file_id,)
+            )
+            row = cursor.fetchone()
+            
+            if row:
+                return FileMetadata(
+                    id=row["id"],
+                    name=row["name"],
+                    size=row["size"],
+                    mime_type=row["mime_type"],
+                    parent_folder_id=row["parent_folder_id"],
+                    created_at=row["created_at"]
+                )
+            
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to move file"
+            )
     
     except HTTPException:
         raise
